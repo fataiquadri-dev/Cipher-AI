@@ -516,6 +516,142 @@ def extract_image_generation_prompt(message):
 
 
 # =========================================================
+# THEME COMMANDS
+#
+# The browser already switches the theme when you type
+# something like "Switch to Ocean". But the message was
+# still being sent on to the AI, which answered "I can't
+# change the theme". Here the server recognises theme
+# requests itself and replies with a clear confirmation
+# (which is also saved in the chat history), so the AI
+# is never asked and never contradicts what just happened.
+# =========================================================
+
+THEMES = {
+    "midnight": "Midnight",
+    "emerald": "Emerald",
+    "cyber": "Cyber",
+    "amoled": "AMOLED Black",
+    "ocean": "Ocean",
+    "sunset": "Sunset",
+    "aurora": "Aurora",
+    "violet": "Violet",
+    "rose": "Rose",
+    "crimson": "Crimson",
+    "arctic": "Arctic",
+    "gold": "Gold",
+    "nebula": "Nebula",
+    "sakura": "Sakura",
+    "matrix": "Matrix",
+    "light": "Light"
+}
+
+THEME_VERBS = re.compile(
+    r"\b(change|switch|set|use|apply|make|turn|swap|put|give|try)\b"
+)
+
+THEME_STRONG_NOUNS = re.compile(
+    r"\b(theme|template|interface|appearance)\b"
+)
+
+THEME_WEAK_NOUNS = re.compile(
+    r"\b(look|colou?rs?|color scheme|vibe|skin)\b"
+)
+
+THEME_BARE_SWITCH = re.compile(
+    r"\b(switch|change)\s+(?:\w+\s+){0,2}to\s+("
+    + "|".join(THEMES)
+    + r")\b"
+)
+
+# Questions and other topics that merely mention a theme word.
+THEME_QUESTION_START = re.compile(
+    r"^(how|what|why|when|where|who|explain|tell me about|describe)\b"
+)
+
+THEME_EXCLUDE = re.compile(
+    r"\b(website|webpage|web page|site|blog|css|html|react|code|coding|"
+    r"wordpress|figma|powerpoint|slides?|excel|resume|cv|editor|vscode|"
+    r"phone|android|iphone|ios|windows|mac|browser|discord|whatsapp|"
+    r"telegram|twitter|instagram|youtube|story|poem|essay|song|logo|"
+    r"poster|design|presentation|painting|party|birthday|wedding|room|"
+    r"game|movie|book|document)\b"
+)
+
+
+def detect_theme_request(message):
+
+    """
+    Returns the theme key (e.g. "ocean") when the message asks
+    Cipher to switch to a specific theme, "" when it asks to
+    change the theme without saying which one, and None when
+    the message is about something else entirely.
+    """
+
+    text = (message or "").lower().strip()
+
+    if not text or len(text.split()) > 10:
+
+        return None
+
+    if THEME_QUESTION_START.match(text) or THEME_EXCLUDE.search(text):
+
+        return None
+
+
+    name = next(
+        (
+            key for key in THEMES
+            if re.search(rf"\b{key}\b", text)
+        ),
+        None
+    )
+
+    has_verb = bool(THEME_VERBS.search(text))
+
+    strong_noun = bool(THEME_STRONG_NOUNS.search(text))
+
+    weak_noun = bool(THEME_WEAK_NOUNS.search(text))
+
+
+    if name and (
+        THEME_BARE_SWITCH.search(text)
+        or (has_verb and (strong_noun or weak_noun))
+        or (strong_noun and len(text.split()) <= 5)
+    ):
+
+        return name
+
+
+    if has_verb and strong_noun and not name:
+
+        return ""
+
+
+    return None
+
+
+def build_theme_reply(theme_key):
+
+    if theme_key:
+
+        return (
+            f"\u2705 Done! I've changed the theme to "
+            f"{THEMES[theme_key]} \U0001F3A8. "
+            "Want a different one? Just tell me which."
+        )
+
+
+    names = ", ".join(THEMES.values())
+
+    return (
+        "Sure! Which theme would you like? \U0001F3A8\n\n"
+        f"{names}\n\n"
+        'Just say, for example, "Switch to Ocean".'
+    )
+
+
+# =========================================================
 # SAFE MATH
 # =========================================================
 
@@ -3230,6 +3366,14 @@ def chat():
     msg = message.lower()
 
 
+    # Theme commands are answered here, never sent to the AI.
+    theme_request = (
+        None
+        if image_base64
+        else detect_theme_request(message)
+    )
+
+
     if image_base64:
 
         user_facts = get_user_facts(
@@ -3244,6 +3388,11 @@ def chat():
             user_facts=user_facts,
             history=history
         )
+
+
+    elif theme_request is not None:
+
+        reply = build_theme_reply(theme_request)
 
 
     elif extract_image_generation_prompt(message):
