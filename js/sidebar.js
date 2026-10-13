@@ -1,7 +1,12 @@
-
 /* ==========================================
    CIPHER SIDEBAR
    Created by Fatai Quadri
+
+   v2 - Claude-style chat history:
+   a "Pinned" section on top, "Recents" below,
+   a chat icon + one-line title on every row,
+   and a "..." menu (Pin / Unpin / Delete) that
+   works on phones as well as desktop.
 ========================================== */
 
 "use strict";
@@ -43,6 +48,61 @@ const SidebarUI = {
     newChat: document.querySelector(".new-chat-btn")
 
 };
+
+
+/* ==========================================
+   ICONS (inline SVG so they follow the theme)
+========================================== */
+
+const SIDEBAR_ICONS = {
+
+    chat:
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 0 1 3 11.5 8.5 8.5 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z"/>' +
+        '</svg>',
+
+    pin:
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M12 17v5"/>' +
+        '<path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>' +
+        '</svg>',
+
+    dots:
+        '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+        '<circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/>' +
+        '</svg>',
+
+    trash:
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>' +
+        '</svg>'
+
+};
+
+
+/* ==========================================
+   SMALL HELPERS
+========================================== */
+
+function sidebarNotify(message, isError) {
+
+    if (isError) {
+
+        if (typeof showError === "function") {
+
+            showError(message);
+
+        }
+
+    }
+
+    else if (typeof showSuccess === "function") {
+
+        showSuccess(message);
+
+    }
+
+}
 
 
 /* ==========================================
@@ -137,6 +197,8 @@ function closeSidebar() {
 
 /* ==========================================
    CLOSE WHEN CLICKING OUTSIDE
+   (the "..." menu lives outside the sidebar, so
+   taps inside it must not count as "outside")
 ========================================== */
 
 document.addEventListener("click", (event) => {
@@ -149,7 +211,11 @@ document.addEventListener("click", (event) => {
 
         SidebarUI.sidebar.contains(event.target) ||
 
-        SidebarUI.toggle.contains(event.target);
+        (SidebarUI.toggle &&
+            SidebarUI.toggle.contains(event.target)) ||
+
+        !!(event.target.closest &&
+            event.target.closest(".chat-context-menu"));
 
     if (!clickedInside) {
 
@@ -316,6 +382,8 @@ function highlightActiveChat(chatId) {
 
 /* ==========================================
    RENDER SIDEBAR CHATS
+   Pinned chats first, then "Recents" --
+   laid out the same way as Claude's sidebar.
 ========================================== */
 
 function renderSidebarChats(chats) {
@@ -343,7 +411,8 @@ function renderSidebarChats(chats) {
     if (pinned.length > 0) {
 
         addSidebarSectionLabel(
-            "📌 Pinned"
+            "Pinned",
+            SIDEBAR_ICONS.pin
         );
 
         pinned.forEach(chat => {
@@ -358,11 +427,7 @@ function renderSidebarChats(chats) {
 
     if (recent.length > 0) {
 
-        addSidebarSectionLabel(
-            pinned.length > 0
-                ? "Recent"
-                : "Conversations"
-        );
+        addSidebarSectionLabel("Recents");
 
         recent.forEach(chat => {
 
@@ -381,14 +446,30 @@ function renderSidebarChats(chats) {
    SECTION LABEL
 ========================================== */
 
-function addSidebarSectionLabel(label) {
+function addSidebarSectionLabel(label, iconHTML) {
 
     const section = document.createElement("div");
 
     section.className =
         "chat-section-label";
 
-    section.textContent = label;
+    if (iconHTML) {
+
+        const icon = document.createElement("span");
+
+        icon.className = "chat-section-icon";
+
+        icon.innerHTML = iconHTML;
+
+        section.appendChild(icon);
+
+    }
+
+    const text = document.createElement("span");
+
+    text.textContent = label;
+
+    section.appendChild(text);
 
     SidebarUI.list.appendChild(section);
 
@@ -397,6 +478,7 @@ function addSidebarSectionLabel(label) {
 
 /* ==========================================
    CREATE CHAT ITEM
+   [chat icon] [one-line title ...]  [...]
 ========================================== */
 
 function createSidebarChatItem(chat) {
@@ -416,43 +498,67 @@ function createSidebarChatItem(chat) {
 
     }
 
-    const title =
+
+    const icon = document.createElement("span");
+
+    icon.className = "chat-item-icon";
+
+    icon.innerHTML = SIDEBAR_ICONS.chat;
+
+
+    const titleEl = document.createElement("div");
+
+    titleEl.className = "chat-item-title";
+
+    titleEl.textContent =
         chat.title ||
         "New Conversation";
 
-    const date =
-        formatChatDate(
-            chat.updated_at ||
-            chat.created_at
-        );
+    titleEl.title = titleEl.textContent;
 
-    item.innerHTML = `
 
-        <div class="chat-item-title">
+    const actions = document.createElement("div");
 
-            ${escapeHTML(title)}
+    actions.className = "chat-item-actions";
 
-        </div>
+    const menuButton = document.createElement("button");
 
-        <div class="chat-item-actions">
+    menuButton.type = "button";
 
-            <button
-                type="button"
-                class="chat-action-btn"
-                title="More options"
-                onclick="openChatMenu(event, '${escapeHTML(String(chat.id))}')">
+    menuButton.className = "chat-action-btn";
 
-                ⋯
+    menuButton.title = "More options";
 
-            </button>
+    menuButton.setAttribute("aria-label", "More options");
 
-        </div>
+    menuButton.innerHTML = SIDEBAR_ICONS.dots;
 
-    `;
+    menuButton.addEventListener(
+        "click",
+        event => openChatMenu(event, chat.id)
+    );
+
+    actions.appendChild(menuButton);
+
+
+    item.append(icon, titleEl, actions);
+
 
     item.addEventListener(
         "click",
         () => selectSidebarChat(chat.id)
+    );
+
+    /* Right-click on desktop / long-press on phones */
+    item.addEventListener(
+        "contextmenu",
+        event => {
+
+            event.preventDefault();
+
+            openChatMenu(event, chat.id, menuButton);
+
+        }
     );
 
     return item;
@@ -607,19 +713,19 @@ function setupChatSearchEvents() {
 
 
 /* ==========================================
-   CHAT OPTIONS MENU
+   CHAT OPTIONS MENU  (Pin / Unpin / Delete)
 ========================================== */
 
 let activeChatMenu = null;
 
 
-function openChatMenu(event, chatId) {
+function openChatMenu(event, chatId, anchor) {
 
     event.stopPropagation();
 
     closeChatMenu();
 
-    const button = event.currentTarget;
+    const button = anchor || event.currentTarget;
 
     const chat = Sidebar.chats.find(
         item => String(item.id) === String(chatId)
@@ -627,42 +733,72 @@ function openChatMenu(event, chatId) {
 
     if (!chat) return;
 
+
     const menu = document.createElement("div");
 
     menu.className = "chat-context-menu";
 
-    menu.innerHTML = `
+    menu.setAttribute("role", "menu");
 
-        <button
-            type="button"
-            onclick="togglePinChat('${escapeHTML(String(chatId))}')">
 
-            ${chat.pinned ? "📍 Unpin chat" : "📌 Pin chat"}
+    const pinButton = document.createElement("button");
 
-        </button>
+    pinButton.type = "button";
 
-        <button
-            type="button"
-            class="danger"
-            onclick="deleteChat('${escapeHTML(String(chatId))}')">
+    pinButton.innerHTML =
+        SIDEBAR_ICONS.pin +
+        `<span>${chat.pinned ? "Unpin chat" : "Pin chat"}</span>`;
 
-            🗑 Delete
+    pinButton.addEventListener(
+        "click",
+        () => togglePinChat(chatId)
+    );
 
-        </button>
 
-    `;
+    const deleteButton = document.createElement("button");
+
+    deleteButton.type = "button";
+
+    deleteButton.className = "danger";
+
+    deleteButton.innerHTML =
+        SIDEBAR_ICONS.trash +
+        "<span>Delete</span>";
+
+    deleteButton.addEventListener(
+        "click",
+        () => deleteChat(chatId)
+    );
+
+
+    menu.append(pinButton, deleteButton);
 
     document.body.appendChild(menu);
 
+
+    /* Position under the button, flipping upward and
+       sideways if it would run off the screen. */
+
     const rect = button.getBoundingClientRect();
 
-    menu.style.position = "fixed";
+    const menuRect = menu.getBoundingClientRect();
 
-    menu.style.top =
-        `${rect.bottom + 5}px`;
+    let top = rect.bottom + 6;
 
-    menu.style.left =
-        `${Math.max(8, rect.right - 160)}px`;
+    if (top + menuRect.height > window.innerHeight - 8) {
+
+        top = Math.max(8, rect.top - menuRect.height - 6);
+
+    }
+
+    const left = Math.min(
+        Math.max(8, rect.right - menuRect.width),
+        window.innerWidth - menuRect.width - 8
+    );
+
+    menu.style.top = `${top}px`;
+
+    menu.style.left = `${left}px`;
 
     activeChatMenu = menu;
 
@@ -696,6 +832,12 @@ async function togglePinChat(chatId) {
 
     closeChatMenu();
 
+    const chat = Sidebar.chats.find(
+        item => String(item.id) === String(chatId)
+    );
+
+    const wasPinned = !!(chat && chat.pinned);
+
     try {
 
         const response = await fetch(
@@ -718,14 +860,21 @@ async function togglePinChat(chatId) {
 
         await loadSidebarChats();
 
+        highlightActiveChat(Sidebar.currentChat);
+
+        sidebarNotify(
+            wasPinned ? "Chat unpinned." : "Chat pinned."
+        );
+
     }
 
     catch (error) {
 
         console.error(error);
 
-        showError(
-            "Unable to update chat."
+        sidebarNotify(
+            "Unable to update chat.",
+            true
         );
 
     }
@@ -795,7 +944,7 @@ async function deleteChat(chatId) {
 
         await loadSidebarChats();
 
-        showSuccess(
+        sidebarNotify(
             "Conversation deleted."
         );
 
@@ -805,8 +954,9 @@ async function deleteChat(chatId) {
 
         console.error(error);
 
-        showError(
-            "Unable to delete conversation."
+        sidebarNotify(
+            "Unable to delete conversation.",
+            true
         );
 
     }
@@ -885,16 +1035,10 @@ async function createNewChat() {
             error
         );
 
-        if (
-            typeof showError ===
-            "function"
-        ) {
-
-            showError(
-                "Unable to create a new chat."
-            );
-
-        }
+        sidebarNotify(
+            "Unable to create a new chat.",
+            true
+        );
 
     }
 
@@ -999,4 +1143,3 @@ window.CipherSidebar = Sidebar;
 /* ==========================================
    END OF SIDEBAR.JS
 ========================================== */
-
