@@ -822,6 +822,18 @@ img{ display:block; max-width:100%; }
     border:1px solid var(--accent-line);
 }
 
+/* Hide the welcome screen once a conversation has started.
+   Two rules on purpose: the first is a class set by a small
+   script in index.html (works everywhere); the second is a
+   pure-CSS version for browsers that support :has(). */
+#chat.chat-started .welcome{
+    display:none;
+}
+
+#chat:has(.msg) .welcome{
+    display:none;
+}
+
 /* Image generation mode is toggled on from its card */
 .image-generation-card.active{
     border-color:var(--accent);
@@ -958,11 +970,14 @@ img{ display:block; max-width:100%; }
     min-height:38px;
     max-height:150px;
     overflow-y:auto;
-    padding:8px 2px;
+    padding:7px 2px;
     font-size:16px;
     line-height:1.45;
     color:var(--text-primary);
+    scrollbar-width:none;
 }
+
+#input::-webkit-scrollbar{ display:none; }
 
 #input::placeholder{ color:var(--text-secondary); }
 
