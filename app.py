@@ -5058,6 +5058,21 @@ def send_dm(friend_id):
 
 
 # =========================================================
+# WHATSAPP MODE
+#
+# Stats API for the WhatsApp screen plus the ingest API the
+# WhatsApp bot calls. Lives in whatsapp_routes.py (project
+# root, next to this file). Needs the env vars
+# WA_OWNER_USERNAME and WA_INGEST_KEY, and the tables from
+# whatsapp_schema.sql.
+# =========================================================
+
+from whatsapp_routes import register_whatsapp
+
+register_whatsapp(app, get_db, release_db)
+
+
+# =========================================================
 # DATABASE INITIALIZATION
 #
 # VERCEL CHANGE: init_db() used to run on every cold start.
