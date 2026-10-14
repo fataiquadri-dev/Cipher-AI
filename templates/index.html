@@ -51,6 +51,11 @@
     <link rel="stylesheet"
           href="{{ url_for('static', filename='css/cipher-ui.css') }}">
 
+    <!-- WhatsApp mode -->
+
+    <link rel="stylesheet"
+          href="{{ url_for('static', filename='css/whatsapp-mode.css') }}">
+
 </head>
 
 
@@ -449,6 +454,23 @@
                     type="button">
 
                     ⚙️
+
+                </button>
+
+
+                <!-- WHATSAPP MODE -->
+
+                <button
+                    class="sidebar-icon-btn"
+                    id="waBtn"
+                    title="WhatsApp"
+                    type="button">
+
+                    <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
+                        <circle cx="24" cy="24" r="22" fill="#25d366"/>
+                        <path d="M24 11a13 13 0 0 0-11 19.8L11 37l6.4-2A13 13 0 1 0 24 11Z" fill="none" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/>
+                        <path d="M19.5 18.5c.6 3.6 4.6 7.7 8.7 8.4l1.6-2-3-1.6-1.2 1c-1.4-.6-2.8-2-3.3-3.4l1-1.2-1.6-3Z" fill="#fff"/>
+                    </svg>
 
                 </button>
 
@@ -1275,6 +1297,13 @@
 
 <script
     src="{{ url_for('static', filename='js/auth.js') }}">
+</script>
+
+
+<!-- WhatsApp mode (opens from the #waBtn sidebar button) -->
+
+<script
+    src="{{ url_for('static', filename='js/whatsapp-mode.js') }}">
 </script>
 
 
