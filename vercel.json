@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/index.py": {
-      "includeFiles": "{templates/**,static/**,js/**,sw.js,manifest.json}",
+      "includeFiles": "{templates/**,static/**,js/**,sw.js,manifest.json,whatsapp_routes.py}",
       "maxDuration": 60
     }
   },
