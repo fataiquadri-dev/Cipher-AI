@@ -95,15 +95,15 @@ def ingest():
         ts = datetime.now(timezone.utc)
 
     history = bool(d.get("history"))
-    new_contact = False
-    if direction == "in":
-        row = query(
-            "insert into wa_contacts(jid, name, first_seen, greeted) values (%s,%s,%s,%s) "
-            "on conflict (jid) do nothing returning jid",
-            (jid, d.get("name"), ts, history),
-            one=True,
-        )
-        new_contact = row is not None and not history
+    # Anyone you wrote to first, or from old synced history, counts as already known:
+    # saved as a contact but never flagged "new", so the bot won't auto-reply to them.
+    row = query(
+        "insert into wa_contacts(jid, name, first_seen, greeted) values (%s,%s,%s,%s) "
+        "on conflict (jid) do nothing returning jid",
+        (jid, d.get("name") if direction == "in" else None, ts, history or direction == "out"),
+        one=True,
+    )
+    new_contact = row is not None and direction == "in" and not history
 
     query(
         "insert into wa_messages(jid, direction, body, auto_reply, sent_at) values (%s,%s,%s,%s,%s)",
@@ -209,6 +209,21 @@ def answer(q):
 
     if "contact" in q:
         since, name = (week, "this week") if "week" in q else (today, "today")
+        if re.search(r"\b(who|which|what are|list|names?|show)\b", q):
+            rows = query(
+                "select jid, name, first_seen from wa_contacts where first_seen >= %s "
+                "order by first_seen desc limit 20",
+                (since,),
+            )
+            if not rows:
+                return f"No new contacts {name}."
+            lines = []
+            for r in rows:
+                number = r["jid"].split("@")[0]
+                shown = f"+{number}" if r["jid"].endswith("@s.whatsapp.net") else number
+                who = f"{r['name']} ({shown})" if r.get("name") else shown
+                lines.append(f"- {who}, {r['first_seen'].astimezone(TZ):%a %H:%M}")
+            return f"{plural(len(rows), 'new contact')} {name}:\n" + "\n".join(lines)
         n = query("select count(*) c from wa_contacts where first_seen >= %s", (since,), one=True)["c"]
         return f"{plural(n, 'new contact')} {name}."
 
@@ -224,6 +239,21 @@ def answer(q):
             day = (datetime.now(TZ) - timedelta(days=i)).date()
             out.append(f"{day:%a %d %b}: {counts.get(day, 0)}")
         return "Messages received per day:\n" + "\n".join(out)
+
+    if re.search(r"(last|recent|latest)\s+(\d+\s+)?messages?", q) and "how many" not in q:
+        rows = query(
+            "select m.jid, m.direction, m.body, m.sent_at, c.name "
+            "from wa_messages m left join wa_contacts c using (jid) "
+            "order by m.sent_at desc limit 10"
+        )
+        if not rows:
+            return "No messages saved yet."
+        lines = []
+        for r in rows:
+            who = "You" if r["direction"] == "out" else label(r)
+            text = (r["body"] or "[no text]")[:40]
+            lines.append(f"- {who}, {r['sent_at'].astimezone(TZ):%a %H:%M}: {text}")
+        return "Last 10 messages:\n" + "\n".join(lines)
 
     if "message" in q:
         since, name = (week, "in the last 7 days") if "week" in q else (today, "today")
