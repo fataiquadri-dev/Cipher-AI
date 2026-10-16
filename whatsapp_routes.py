@@ -8,6 +8,7 @@ Env vars (set in Vercel):
 import os
 import re
 import hmac
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -120,10 +121,42 @@ def posts_due():
     if not has_key():
         return jsonify(error="unauthorized"), 401
     rows = query(
-        "select id, body from wa_posts where status='pending' and scheduled_at <= now() "
-        "order by scheduled_at limit 5"
+        "update wa_posts set status='sending' where id in ("
+        "select id from wa_posts where status='pending' and scheduled_at <= now() "
+        "order by scheduled_at limit 5) returning id, body"
     )
     return jsonify(posts=rows)
+
+
+@wa.get("/outbox/due")
+def outbox_due():
+    """Bot polls this for messages you confirmed in Cipher's WhatsApp screen."""
+    if not has_key():
+        return jsonify(error="unauthorized"), 401
+    rows = query(
+        "update wa_outbox set status='sending' where id in ("
+        "select id from wa_outbox where status='pending' order by id limit 5) "
+        "returning id, jid, body"
+    )
+    return jsonify(messages=rows)
+
+
+@wa.post("/outbox/<int:msg_id>/done")
+def outbox_done(msg_id):
+    if not has_key():
+        return jsonify(error="unauthorized"), 401
+    ok = (request.get_json(silent=True) or {}).get("ok", True)
+    row = query(
+        "update wa_outbox set status=%s where id=%s returning jid, body",
+        ("sent" if ok else "failed", msg_id),
+        one=True,
+    )
+    if ok and row:
+        query(
+            "insert into wa_messages(jid, direction, body) values (%s, 'out', %s)",
+            (row["jid"], row["body"]),
+        )
+    return jsonify(ok=True)
 
 
 @wa.post("/posts/<int:post_id>/done")
@@ -161,12 +194,129 @@ def schedule_post():
 def ask():
     if not is_owner():
         return jsonify(answer="WhatsApp mode is private to the account owner."), 403
-    q = ((request.get_json(silent=True) or {}).get("question") or "").lower()
-    return jsonify(answer=answer(q))
+    raw = ((request.get_json(silent=True) or {}).get("question") or "").strip()
+    return jsonify(answer=answer(raw.lower(), raw))
+
+
+# ---------- commands (post / send, always with a confirm step) ----------
+POST_RE = re.compile(
+    r"^(?:please\s+|can you\s+|help me\s+(?:to\s+)?)?(?:post|publish)\s+(.+?)\s+(?:on|to|in)\s+"
+    r"(?:my\s+)?(?:whatsapp\s+)?channel(?:\s+(?:at|by)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?\s*[.!]?$",
+    re.I,
+)
+SEND_RE = re.compile(
+    r"^(?:please\s+|can you\s+|help me\s+(?:to\s+)?)?(?:send|text|message|msg)\s+(?:a\s+)?(?:message\s+)?"
+    r"(?:to\s+)?(.+?)\s*(?:,|:|\s+saying\s+|\s+say\s+|\s+and\s+tell\s+(?:him|her|them)\s+|"
+    r"\s+tell\s+(?:him|her|them)\s+|\s+that\s+)\s*(.+)$",
+    re.I,
+)
+YES_RE = re.compile(r"^(yes|yep|yeah|confirm|send it|go ahead|ok|okay|do it)[.! ]*$", re.I)
+NO_RE = re.compile(r"^(no|nope|cancel|stop|don'?t)[.! ]*$", re.I)
+QUOTES = "\"'\u201c\u201d"
+
+
+def norm(s):
+    s = (s or "").replace("\u00f8", "o").replace("\u00d8", "O")
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)
+    ).lower()
+
+
+def parse_time(h, m, ap):
+    hour, minute = int(h), int(m or 0)
+    if ap:
+        if ap.lower() == "pm" and hour < 12:
+            hour += 12
+        if ap.lower() == "am" and hour == 12:
+            hour = 0
+    if hour > 23 or minute > 59:
+        return None
+    now = datetime.now(TZ)
+    at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return at if at > now else at + timedelta(days=1)
+
+
+def confirm_pending():
+    ob = query(
+        "select id, name, created_at from wa_outbox where status='awaiting' "
+        "and created_at > now() - interval '15 minutes' order by created_at desc limit 1",
+        one=True,
+    )
+    po = query(
+        "select id, scheduled_at, created_at from wa_posts where status='awaiting' "
+        "and created_at > now() - interval '15 minutes' order by created_at desc limit 1",
+        one=True,
+    )
+    if not ob and not po:
+        return "Nothing is waiting for your confirmation."
+    if ob and (not po or ob["created_at"] >= po["created_at"]):
+        query("update wa_outbox set status='pending' where id=%s", (ob["id"],))
+        return f"Sending to {ob.get('name') or 'them'} in a few seconds."
+    query("update wa_posts set status='pending' where id=%s", (po["id"],))
+    if po["scheduled_at"] > datetime.now(timezone.utc) + timedelta(minutes=1):
+        return f"Scheduled for {po['scheduled_at'].astimezone(TZ):%a %H:%M}. It will post automatically."
+    return "Queued. It will be posted to your channel within a minute."
+
+
+def cancel_pending():
+    a = query("update wa_outbox set status='cancelled' where status='awaiting' returning id")
+    b = query("update wa_posts set status='cancelled' where status='awaiting' returning id")
+    return "Cancelled." if (a or b) else "Nothing to cancel."
+
+
+def handle_command(raw):
+    text = raw.strip()
+    if YES_RE.match(text):
+        return confirm_pending()
+    if NO_RE.match(text):
+        return cancel_pending()
+
+    m = POST_RE.match(text)
+    if m:
+        body, h, mi, ap = m.groups()
+        body = body.strip().strip(QUOTES)
+        if not body:
+            return None
+        body = body[0].upper() + body[1:]
+        at = parse_time(h, mi, ap) if h else datetime.now(TZ)
+        if at is None:
+            return "That time doesn't look right. Try something like: at 6pm"
+        query("insert into wa_posts(body, scheduled_at, status) values (%s,%s,'awaiting')", (body, at))
+        when = f"at {at:%a %H:%M}" if h else "now"
+        return f'Ready to post to your channel {when}:\n"{body}"\n\nReply "yes" to confirm or "cancel".'
+
+    m = SEND_RE.match(text)
+    if m:
+        who = m.group(1).strip()
+        body = re.sub(
+            r"^(?:tell\s+(?:him|her|them)\s+(?:that\s+)?|say(?:ing)?\s+|that\s+)", "", m.group(2).strip(), flags=re.I
+        ).strip().strip(QUOTES)
+        if not who or not body:
+            return None
+        digits = re.sub(r"\D", "", who)
+        rows = query("select jid, name from wa_contacts order by first_seen desc limit 1000")
+        if len(digits) >= 7:
+            matches = [r for r in rows if digits in r["jid"].split("@")[0]]
+        else:
+            target = norm(who)
+            matches = [r for r in rows if r["name"] and target in norm(r["name"])]
+        if not matches:
+            return f"I couldn't find a contact called {who}. They need to have chatted with you since the bot connected."
+        if len(matches) > 1:
+            return "Several contacts match: " + ", ".join(label(r) for r in matches[:5]) + ". Please be more specific."
+        c = matches[0]
+        body = body[0].upper() + body[1:]
+        query("insert into wa_outbox(jid, name, body) values (%s,%s,%s)", (c["jid"], c.get("name"), body))
+        return f'Ready to send to {label(c)}:\n"{body}"\n\nReply "yes" to confirm or "cancel".'
+    return None
 
 
 # ---------- answers ----------
-def answer(q):
+def answer(q, raw=""):
+    if raw:
+        cmd = handle_command(raw)
+        if cmd:
+            return cmd
     today, week = day_start(0), day_start(6)
 
     if re.search(r"unanswered|waiting|not replied|need.*repl|reply to", q):
