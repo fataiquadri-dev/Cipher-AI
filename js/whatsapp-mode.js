@@ -21,6 +21,7 @@
   var CIPHER_MARK = '<span class="wa-cmark">&cent;</span>';
 
   var root, body, msgs, input;
+  var history = [];
 
   function build() {
     root = document.createElement("div");
@@ -30,18 +31,18 @@
       '<div class="wa-head">' +
         '<button class="wa-back" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>' +
         '<div class="wa-logo">' + WA_LOGO + '</div>' +
-        '<div class="wa-title"><b>WhatsApp Control Center</b><span><i></i>Bot online</span></div>' +
+        '<div class="wa-title"><b>Cipher Pro</b><span class="wa-status"><i style="background:#8fb5a6"></i>Checking bot...</span></div>' +
         '<div class="wa-power">' + CIPHER_MARK + '<div><small>Powered by</small><b>Cipher</b></div></div>' +
       '</div>' +
       '<div class="wa-body">' +
         '<div class="wa-hero">' + WA_LOGO +
-          '<h2>Your WhatsApp at a glance</h2>' +
-          '<p>Ask about your messages, new contacts and channel posts, or type your own question.</p></div>' +
+          "<h2>Hi, I&rsquo;m Cipher Pro</h2>" +
+          '<p>Ask about your WhatsApp, give me tasks like posting to your channel or messaging a contact, or just chat and plan with me.</p></div>' +
         '<div class="wa-quick"><div class="wa-sec">Quick questions <small>Tap to ask</small></div><div class="wa-grid"></div></div>' +
         '<div class="wa-msgs"></div>' +
         '<button class="wa-more" type="button">Show quick questions</button>' +
       '</div>' +
-      '<form class="wa-input"><input placeholder="Ask about your WhatsApp..." autocomplete="off">' +
+      '<form class="wa-input"><input placeholder="Message Cipher Pro..." autocomplete="off">' +
         '<button type="submit" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7Z"/></svg></button></form>';
     document.body.appendChild(root);
 
@@ -72,6 +73,20 @@
     if (!root) build();
     if (typeof closeSidebar === "function") closeSidebar();
     root.classList.add("open");
+    refreshStatus();
+  }
+
+  function refreshStatus() {
+    var el = root.querySelector(".wa-status");
+    fetch("/api/whatsapp/status", { credentials: "same-origin" })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!el || j.error) return;
+        el.innerHTML = j.online
+          ? "<i></i>Bot online"
+          : '<i style="background:#e5534b"></i>Bot offline';
+      })
+      .catch(function () {});
   }
   function close() { if (root) root.classList.remove("open"); }
 
@@ -102,13 +117,33 @@
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: question })
+      body: JSON.stringify({ question: question, history: history.slice(-10) })
     })
       .then(function (r) {
         return r.json().then(function (j) { return j.answer || "Something went wrong. Try again."; });
       })
       .catch(function () { bubble.textContent = "Can't reach Cipher right now. Check your connection and try again."; return null; })
-      .then(function (text) { if (text) bubble.textContent = text; });
+      .then(function (text) {
+        if (!text) return;
+        bubble.textContent = text;
+        history.push({ role: "user", content: question }, { role: "assistant", content: text });
+        if (text.indexOf('Reply "yes"') !== -1) addConfirm();
+      });
+  }
+
+  function addConfirm() {
+    var box = document.createElement("div");
+    box.style.cssText = "display:flex;gap:8px;align-self:flex-start";
+    [["Yes, do it", "yes", "#25d366", "#03120e"], ["Cancel", "cancel", "transparent", "#eafaf3"]].forEach(function (b) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = b[0];
+      btn.style.cssText = "border:1px solid #25d366;border-radius:16px;padding:8px 16px;font:inherit;cursor:pointer;background:" + b[2] + ";color:" + b[3];
+      btn.addEventListener("click", function () { box.remove(); ask(b[1]); });
+      box.appendChild(btn);
+    });
+    msgs.appendChild(box);
+    body.scrollTop = body.scrollHeight;
   }
 
   window.openWhatsAppMode = open;
