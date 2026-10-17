@@ -708,3 +708,4 @@ def answer(q, raw="", history=None):
 
     # Anything else: have a normal conversation
     return ai_reply(raw or q, history)
+
