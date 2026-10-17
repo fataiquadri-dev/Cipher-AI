@@ -117,6 +117,28 @@ def ingest():
     return jsonify(ok=True, new_contact=new_contact)
 
 
+@wa.post("/contacts")
+def contacts_sync():
+    """Bot sends names of people already in your WhatsApp. They count as known, not new."""
+    if not has_key():
+        return jsonify(error="unauthorized"), 401
+    items = (request.get_json(silent=True) or {}).get("contacts") or []
+    jids, names = [], []
+    for c in items[:500]:
+        jid, name = str((c or {}).get("jid") or "").strip(), str((c or {}).get("name") or "").strip()
+        if jid and name:
+            jids.append(jid)
+            names.append(name[:80])
+    if jids:
+        query(
+            "insert into wa_contacts(jid, name, first_seen, greeted) "
+            "select j, n, timestamptz '2000-01-01', true from unnest(%s::text[], %s::text[]) as t(j, n) "
+            "on conflict (jid) do update set name = coalesce(wa_contacts.name, excluded.name)",
+            (jids, names),
+        )
+    return jsonify(ok=True, saved=len(jids))
+
+
 @wa.get("/posts/due")
 def posts_due():
     """Bot polls this for channel posts that should go out now."""
@@ -157,6 +179,11 @@ def outbox_done(msg_id):
         query(
             "insert into wa_messages(jid, direction, body) values (%s, 'out', %s)",
             (row["jid"], row["body"]),
+        )
+        query(
+            "insert into wa_contacts(jid, first_seen, greeted) values (%s, now(), true) "
+            "on conflict (jid) do nothing",
+            (row["jid"],),
         )
     return jsonify(ok=True)
 
@@ -306,8 +333,18 @@ def queue_message(who, body):
     else:
         target = norm(who)
         matches = [r for r in rows if r["name"] and target in norm(r["name"])]
+    if not matches and len(digits) >= 7:
+        query("insert into wa_outbox(jid, name, body) values (%s,%s,%s)", (f"{digits}@s.whatsapp.net", None, body[0].upper() + body[1:]))
+        return (
+            f'Ready to send to +{digits}:\n"{body[0].upper() + body[1:]}"\n\n'
+            "This number hasn't chatted with you yet, and first-time messages to strangers carry some ban risk.\n"
+            'Reply "yes" to confirm or "cancel".'
+        )
     if not matches:
-        return f"I couldn't find a contact called {who}. They need to have chatted with you since the bot connected."
+        return (
+            f"I couldn't find \"{who}\" in the chats the bot knows. "
+            "Give me their phone number with the country code, or ask them to message you once."
+        )
     if len(matches) > 1:
         return "Several contacts match: " + ", ".join(label(r) for r in matches[:5]) + ". Please be more specific."
     c = matches[0]
@@ -383,6 +420,21 @@ def bot_status():
         return False, None
 
 
+def channel_note():
+    """None when the channel is fine, otherwise a plain-English reason from the bot."""
+    try:
+        row = query("select value from wa_auth where key='channel'", one=True)
+    except Exception:
+        return None
+    if not row:
+        return (
+            "The bot hasn't reported on your channel yet. It may not have the latest update, "
+            "or CHANNEL_INVITE may be missing in Render."
+        )
+    state = json.loads(row["value"])
+    return None if state.get("ok") else "Channel problem: " + str(state.get("error") or "unknown")
+
+
 def _ask_ai_fn():
     """Borrow Cipher's own AI function from app.py (Groq, then Gemini, then OpenRouter)."""
     for name in ("app", "__main__"):
@@ -401,6 +453,49 @@ HELP = (
 )
 
 
+READ_CHATS = os.environ.get("WA_AI_READ_CHATS", "1") != "0"
+
+
+def chat_snippets(raw):
+    """Recent chat text for the AI. Switch off with WA_AI_READ_CHATS=0 in Vercel."""
+    rows = query(
+        "select * from (select m.jid, m.direction, m.body, m.sent_at, c.name, "
+        "row_number() over (partition by m.jid order by m.sent_at desc) rn, "
+        "max(m.sent_at) over (partition by m.jid) chat_last "
+        "from wa_messages m left join wa_contacts c using (jid) where coalesce(m.body,'') <> '') t "
+        "where rn <= 4 order by chat_last desc, jid, sent_at asc limit 80"
+    )
+    chats = {}
+    for r in rows:
+        chats.setdefault(r["jid"], []).append(r)
+    blocks = []
+    for jid, msgs in list(chats.items())[:8]:
+        who = label(msgs[0])
+        lines = [
+            f"  {'You' if m['direction'] == 'out' else who} ({m['sent_at'].astimezone(TZ):%a %H:%M}): {m['body'][:120]}"
+            for m in msgs
+        ]
+        blocks.append(f"Chat with {who}:\n" + "\n".join(lines))
+
+    # If the owner names someone, include more of that conversation
+    names = query("select jid, name from wa_contacts where name is not null order by first_seen desc limit 1000")
+    low = norm(raw)
+    focus = [n for n in names if len(n["name"]) >= 3 and norm(n["name"]) in low][:2]
+    for n in focus:
+        more = query(
+            "select direction, body, sent_at from wa_messages where jid=%s and coalesce(body,'') <> '' "
+            "order by sent_at desc limit 15",
+            (n["jid"],),
+        )
+        if more:
+            lines = [
+                f"  {'You' if m['direction'] == 'out' else n['name']} ({m['sent_at'].astimezone(TZ):%a %d %b %H:%M}): {m['body'][:200]}"
+                for m in reversed(more)
+            ]
+            blocks.append(f"More of the chat with {n['name']}:\n" + "\n".join(lines))
+    return "\n".join(blocks)[:4500]
+
+
 def ai_reply(raw, history):
     fn = _ask_ai_fn()
     if not fn:
@@ -411,6 +506,7 @@ def ai_reply(raw, history):
         new = query("select count(*) c from wa_contacts where first_seen >= %s", (today,), one=True)["c"]
         new_week = query("select count(*) c from wa_contacts where first_seen >= %s", (week,), one=True)["c"]
         online, _ = bot_status()
+        chan = channel_note() or "ready"
         waiting = query(
             "select distinct on (m.jid) m.jid, m.direction, m.sent_at, c.name "
             "from wa_messages m left join wa_contacts c using (jid) "
@@ -429,7 +525,12 @@ def ai_reply(raw, history):
         "You are chatting with the account owner on their WhatsApp screen, so you two can talk, plan and act together. "
         "Chat naturally about anything: ideas, planning, writing posts or replies, decisions. "
         "Be warm, sharp and interactive, and keep replies short for a phone screen. "
-        "You only know the live numbers below and cannot read the content of their chats; never pretend to. "
+        + (
+            "You can read recent chat messages (shown below under CHATS), but only what the bot has recorded since it "
+            "connected; older history is not available, so say so if asked about it. Never invent messages. "
+            if READ_CHATS
+            else "You only know the live numbers below and cannot read the content of their chats; never pretend to. "
+        ) +
         "You can queue two actions for them, and the owner must confirm each one before it happens: "
         "(1) post text to their WhatsApp channel, (2) send a WhatsApp message to a contact. "
         "When they clearly want one of these done, reply with ONE line only, nothing else: "
@@ -440,10 +541,16 @@ def ai_reply(raw, history):
         f"Local time now: {now:%A %d %B %Y, %H:%M}. "
         f"Live data: bot {'online' if online else 'offline'}; {msgs} messages received today; "
         f"{new} new contacts today and {new_week} in the last 7 days; "
-        f"chats waiting for a reply: {', '.join(waiting) or 'none'}; channel posts waiting to go out: {post_txt}."
+        f"chats waiting for a reply: {', '.join(waiting) or 'none'}; channel posts waiting to go out: {post_txt}; channel status: {chan}."
     )
+    chats_txt = ""
+    if READ_CHATS:
+        try:
+            chats_txt = "\n\nCHATS:\n" + (chat_snippets(raw) or "(no messages recorded yet)")
+        except Exception:
+            chats_txt = ""
     try:
-        reply = fn(context + "\n\nUser: " + raw, history=history or None) or HELP
+        reply = fn(context + chats_txt + "\n\nUser: " + raw, history=history or None) or HELP
     except Exception:
         return HELP
     m = re.search(r"ACTION:\s*(\{.*\})", reply, re.S)
@@ -497,6 +604,9 @@ def answer(q, raw="", history=None):
         out = "Your latest channel posts:\n" + "\n".join(lines)
         if any("overdue" in l for l in lines):
             out += "\n\nOverdue means the bot is asleep or has no channel set. Ask me: is the bot online?"
+        note = channel_note()
+        if note:
+            out += "\n\n" + note
         return out
 
     if re.search(r"unanswered|waiting for (my |a )?repl|not replied|unreplied|who.*(waiting|need)", q) and not q.startswith("reply"):
